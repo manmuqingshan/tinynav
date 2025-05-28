@@ -1,0 +1,39 @@
+[build-system]
+requires = ["scikit-build-core", "pybind11", "numpy"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "tinynav"
+version = "0.1.0"
+description = "minimal implementation of navigation"
+authors = [{ name = "Zhenfei Yang", email = "zhenfei.yang@deepmirror.com" }]
+dependencies = [
+    "numpy==1.26.1", # for compatability with ros2's cv_bridge
+    "scipy",
+    "matplotlib",
+    "opencv-python",
+    "rerun-sdk[notebook]",
+    "notebook",
+    "jupyterlab",
+    "lightglue @ git+https://github.com/cvg/LightGlue.git@c2f8561",
+    "codetiming",
+    "numba",
+    "pypose",
+    "pygame",
+    "pycuda",
+    "pybind11",
+    "huggingface_hub",
+]
+
+[tool.scikit-build]
+cmake.source-dir = "tinynav/cpp"
+wheel.install-dir = "tinynav"
+
+
+[tool.uv]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.12.3",
+]
+

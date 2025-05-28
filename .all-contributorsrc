@@ -1,0 +1,52 @@
+{
+  "projectName": "tinynav",
+  "projectOwner": "UniflexAI",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "files": [
+    "README.md"
+  ],
+  "imageSize": 100,
+  "commit": false,
+  "commitConvention": "angular",
+  "contributors": [
+    {
+      "login": "dvorak0",
+      "name": "YANG Zhenfei",
+      "avatar_url": "https://avatars.githubusercontent.com/u/2220369?v=4",
+      "profile": "https://github.com/dvorak0",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "junlinp",
+      "name": "junlinp",
+      "avatar_url": "https://avatars.githubusercontent.com/u/16746493?v=4",
+      "profile": "https://github.com/junlinp",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "heyixuan-DM",
+      "name": "heyixuan-DM",
+      "avatar_url": "https://avatars.githubusercontent.com/u/105199938?v=4",
+      "profile": "https://github.com/heyixuan-DM",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "xinghanDM",
+      "name": "xinghan li",
+      "avatar_url": "https://avatars.githubusercontent.com/u/193573671?v=4",
+      "profile": "https://github.com/xinghanDM",
+      "contributions": [
+        "code"
+      ]
+    }
+  ],
+  "contributorsPerLine": 7,
+  "linkToUsage": false
+}
