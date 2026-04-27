@@ -25,7 +25,7 @@ import rclpy.time
 import tf2_ros
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import Float32, String
 
 from tool.ros2_node_manager import Ros2NodeManager
@@ -436,18 +436,14 @@ class BackendNode(Ros2NodeManager):
         return snapshot
 
     def _start_unitree_if_configured(self):
-        iface = os.environ.get('UNITREE_NETWORK_INTERFACE')
-        if not iface:
-            return
         _env = os.environ.copy()
         _env['PYTHONPATH'] = _VENV_SITE + ':' + _env.get('PYTHONPATH', '')
-        _env['UNITREE_NETWORK_INTERFACE'] = iface
         self._unitree_proc = self._launch_proc(
             'unitree',
             ['uv', 'run', 'python', '/tinynav/tinynav/platforms/unitree_control.py'],
             env=_env,
         )
-        self.get_logger().info(f'unitree_control started (interface={iface})')
+        self.get_logger().info('unitree_control started')
 
     def get_sensor_mode(self) -> str:
         return self._sensor_mode
