@@ -59,7 +59,7 @@ class CmdVelControlNode(Node):
         _latched_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(Bool, '/nav/paused', self._on_paused, _latched_qos)
         self.cmd_timer = self.create_timer(1.0 / self.cmd_rate_hz, self.cmd_timer_callback)
-
+        
     def _on_paused(self, msg: Bool):
         self._paused = msg.data
         if not self._paused:
@@ -76,6 +76,11 @@ class CmdVelControlNode(Node):
         now = time.monotonic()
         dt = max(1e-3, now - self.last_cmd_pub_time)
         self.last_cmd_pub_time = now
+
+        if self._paused:
+            self.cmd_pub.publish(Twist())
+            self.prev_cmd = Twist()
+            return
 
         # Stale-path protection: slow down, then stop if planner has not refreshed.
         age = float('inf') if self.last_path_update_time is None else (now - self.last_path_update_time)
