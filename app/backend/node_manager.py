@@ -91,6 +91,37 @@ def _encode_preview_jpeg(
     return buf.tobytes()
 
 
+def _pack_bgr(bgr: np.ndarray) -> np.ndarray:
+    """Pack a BGR array's last axis into a single uint32 key per pixel."""
+    return (bgr[..., 0].astype(np.uint32) << 16
+            | bgr[..., 1].astype(np.uint32) << 8
+            | bgr[..., 2].astype(np.uint32))
+
+
+# Inverse of the planner's cv2.applyColorMap(x, COLORMAP_JET): maps each JET
+# colour (packed BGR key) back to the 0..255 scalar it was made from. JET is
+# injective over 0..255, so on an *uncompressed* height_map frame the recovery
+# is exact (verified round-trip max err 0).
+_JET_SCALAR_BY_BGR = {
+    int(key): scalar
+    for scalar, key in enumerate(_pack_bgr(cv2.applyColorMap(
+        np.arange(256, dtype=np.uint8).reshape(256, 1), cv2.COLORMAP_JET
+    ).reshape(256, 3)))
+}
+
+
+def _jet_bgr_to_scalar(arr_bgr: np.ndarray) -> np.ndarray:
+    """Recover the 0..255 scalar field from a JET-colourised BGR image.
+
+    Only the distinct colours in the frame are looked up (<=256), so this is
+    O(pixels) with no large temporaries. Off-palette colours (shouldn't occur
+    on uncompressed frames) fall back to 0 = danger.
+    """
+    uniq, inv = np.unique(_pack_bgr(arr_bgr), return_inverse=True)
+    lut = np.array([_JET_SCALAR_BY_BGR.get(int(k), 0) for k in uniq], dtype=np.uint8)
+    return lut[inv].reshape(arr_bgr.shape[:2])
+
+
 class BackendNode(Ros2NodeManager):
     """Ros2NodeManager + subscriptions needed by the HTTP/WS layer."""
 
@@ -277,12 +308,21 @@ class BackendNode(Ros2NodeManager):
             arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
             if msg.encoding == 'rgb8':
                 arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-            # Grid is (X_dim, Y_dim, 3): rows=X, cols=Y.
+            # Recover the raw 0..255 ESDF scalar from the JET colours and ship
+            # that single channel instead of the 3-channel colour image. The
+            # planner still colourises (rviz consumes the JET topic), but the
+            # frontend shader re-colours from its own palette, so shipping colour
+            # over the wire only to recover the scalar again was wasteful. A
+            # mono8 PNG is ~1/3 the bytes, lossless (no JPEG chroma bleed punching
+            # black no-data speckles through the danger region), and needs no hue
+            # recovery downstream. scalar 0 = danger, 255 = far-field.
+            # TODO: planner could dual-publish height_normalized as mono8 (see
+            # planning_node.py publish_height_map) so this inverse can be dropped.
+            scalar = _jet_bgr_to_scalar(arr)
+            # Grid is (X_dim, Y_dim): rows=X, cols=Y.
             # Transpose + flipud → rows=Y(inverted), cols=X, so canvas X=right Y=up matches painter.
-            arr = np.flipud(arr.transpose(1, 0, 2))
-            # Invert JET colormap so dangerous (near obstacle) = red, safe = blue.
-            arr = arr[:, :, ::-1]
-            _, buf = cv2.imencode('.jpg', arr, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            scalar = np.flipud(scalar.T)
+            _, buf = cv2.imencode('.png', scalar, [cv2.IMWRITE_PNG_COMPRESSION, 6])
             with self._lock:
                 self._esdf_bytes = buf.tobytes()
         except Exception:
