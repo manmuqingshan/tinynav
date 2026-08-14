@@ -9,6 +9,7 @@ from scipy.spatial.transform import Rotation as R
 import numpy as np
 import logging
 import time
+from tinynav.core.robot_specs import ROBOT_CONFIG
 
 # Module-level logger for cases where self.get_logger() is not available
 logger = logging.getLogger(__name__)
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 class CmdVelControlNode(Node):
     def __init__(self):
         super().__init__('cmd_vel_control_node')
+        self.robot = ROBOT_CONFIG
         self.logger = self.get_logger()  # Use ROS2 logger
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pose_sub = self.create_subscription(Odometry, '/slam/odometry', self.pose_callback, 10)
@@ -40,7 +42,8 @@ class CmdVelControlNode(Node):
         self.path_stale_stop_factor = 5.0
         self.max_linear_acc = 0.6   # m/s^2
         self.max_angular_acc = 0.8  # rad/s^2
-        self.max_angular_speed = 0.8  # rad/s
+        self.max_angular_speed = self.robot.max_angular_vel  # rad/s
+        self.max_forward_speed = self.robot.max_linear_vel  # m/s
         self.planner_dt = 0.1       # trajectory dt in planning_node
         # planning_node publishes path with for j in range(..., step=10), so points are ~1.0 s apart.
         self.path_pose_stride = 10
@@ -48,8 +51,8 @@ class CmdVelControlNode(Node):
         self.path_filter_tau = 0.30
         self.lookahead_steps = 1
         # Static-friction compensation: very small vx often cannot move the robot.
-        self.min_effective_linear_speed = 0.1
-        self.min_effective_angular_speed = 0.1
+        self.min_effective_linear_speed = self.robot.min_linear_vel
+        self.min_effective_angular_speed = self.robot.min_angular_vel
         self.linear_engage_threshold = 0.04
         self.fixed_reverse_speed = 0.2
         # Hack: if path first segment points far away from robot heading,
@@ -199,7 +202,7 @@ class CmdVelControlNode(Node):
         if raw_vx < 0.0:
             vx = -self.fixed_reverse_speed
         else:
-            vx = float(np.clip(raw_vx, 0.0, 0.5))
+            vx = float(np.clip(raw_vx, 0.0, self.max_forward_speed))
         vy = 0.0
         vyaw = np.clip(angular_velocity_vec[2], -self.max_angular_speed, self.max_angular_speed)
         is_backward_segment = raw_vx < 0.0

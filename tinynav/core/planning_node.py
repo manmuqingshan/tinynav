@@ -16,54 +16,7 @@ from std_msgs.msg import Header
 from codetiming import Timer
 import cv2
 from tinynav.core.math_utils import rotvec_to_matrix, quat_to_matrix, matrix_to_quat, msg2np
-
-
-@dataclass
-class RobotConfig:
-    """Robot geometry. Body frame: +x forward, +y left."""
-    name: str = 'go2'
-    shape: str = 'square'
-    length: float = 0.7
-    width: float = 0.3
-    radius: float = 0.3
-    camera_x: float = 0.35
-    camera_y: float = 0.0
-    control_x: float = 0.0
-    control_y: float = 0.0
-    safety_radius: float = 0.1
-
-    @property
-    def cam_offset_3d(self):
-        """Offset [left, up, forward] from control center to camera in body frame."""
-        return np.array([self.camera_y - self.control_y, 0.0, self.camera_x - self.control_x], dtype=np.float32)
-
-    @property
-    def half_size(self):
-        if self.shape == 'circle':
-            return (self.radius, self.radius)
-        return (self.length / 2.0, self.width / 2.0)
-
-    def footprint_from_control(self):
-        """Returns (front_len, rear_len, half_w) relative to control center."""
-        hl, hw = self.half_size
-        return float(hl - self.control_x), float(hl + self.control_x), float(hw)
-
-
-GO2_CONFIG = RobotConfig(
-    name='go2', shape='square',
-    length=0.4, width=0.3,
-    camera_x=0.2, camera_y=0.0,
-    control_x=0.0, control_y=0.0,
-    safety_radius=0.2,
-)
-
-B2_CONFIG = RobotConfig(
-    name='b2', shape='square',
-    length=1.0, width=0.5,
-    camera_x=0.5, camera_y=0.0,
-    control_x=-0.5, control_y=0.0,
-    safety_radius=0.1,
-)
+from tinynav.core.robot_specs import ROBOT_CONFIG
 
 # === Helper functions ===
 @njit(cache=True)
@@ -185,15 +138,16 @@ def build_obstacle_map(occupancy_grid, origin, resolution, robot_z, config=None)
 @njit(cache=True)
 def generate_trajectory_library_3d(
     num_samples=15, duration=3.0, dt=0.1,
-    init_p=np.zeros(3), init_q=np.array([0, 0, 0, 1])
+    init_p=np.zeros(3), init_q=np.array([0, 0, 0, 1]),
+    max_linear_vel=0.5, max_angular_vel=np.pi / 3,
 ):
     """Regular sampled lattice (forward-only)."""
     num_steps = int(duration / dt) + 1
 
-    vx_max = 0.5
+    vx_max = max_linear_vel
     n_vx = max(3, int(num_samples / 2))
     vx_samples = np.linspace(0.0, vx_max, n_vx)
-    omega_y_samples = np.linspace(-np.pi / 3, np.pi / 3, num_samples)
+    omega_y_samples = np.linspace(-max_angular_vel, max_angular_vel, num_samples)
 
     num_samples = len(vx_samples) * len(omega_y_samples)
 
@@ -350,12 +304,11 @@ def roll_occupancy_grid(occupancy_grid, old_origin, new_origin, resolution):
 class PlanningNode(Node):
     def __init__(self):
         super().__init__('planning_node')
-        self.robot = GO2_CONFIG
         self.get_logger().info(
-            f"Robot: {self.robot.name} ({self.robot.shape} {self.robot.length}x{self.robot.width}m, "
-            f"cam=({self.robot.camera_x},{self.robot.camera_y}), "
-            f"ctrl=({self.robot.control_x},{self.robot.control_y}), "
-            f"safety_r={self.robot.safety_radius}m)"
+            f"Robot: {ROBOT_CONFIG.name} ({ROBOT_CONFIG.shape} {ROBOT_CONFIG.length}x{ROBOT_CONFIG.width}m, "
+            f"cam=({ROBOT_CONFIG.camera_x},{ROBOT_CONFIG.camera_y}), "
+            f"ctrl=({ROBOT_CONFIG.control_x},{ROBOT_CONFIG.control_y}), "
+            f"safety_r={ROBOT_CONFIG.safety_radius}m)"
         )
         self.bridge = CvBridge()
         self.path_pub = self.create_publisher(Path, '/planning/trajectory_path', 10)
@@ -410,14 +363,14 @@ class PlanningNode(Node):
 
     def camera_to_robot_center(self, T):
         """World control-center position derived from camera pose T_cam->world."""
-        return T[:3, 3] - T[:3, :3] @ self.robot.cam_offset_3d
+        return T[:3, 3] - T[:3, :3] @ ROBOT_CONFIG.cam_offset_3d
 
     def publish_footprint(self, T, stamp):
         """Publish robot footprint rectangle as a PointCloud for RViz."""
         forward = T[:3, :3] @ np.array([0.0, 0.0, 1.0])
         left    = T[:3, :3] @ np.array([1.0, 0.0, 0.0])
         center  = self.camera_to_robot_center(T)
-        fl, rl, hw = self.robot.footprint_from_control()
+        fl, rl, hw = ROBOT_CONFIG.footprint_from_control()
         corners = [
             center + forward * fl + left * hw,
             center + forward * fl - left * hw,
@@ -446,7 +399,7 @@ class PlanningNode(Node):
         n = (fwd[0] ** 2 + fwd[1] ** 2) ** 0.5
         fx, fy = (fwd[0] / n, fwd[1] / n) if n > 1e-6 else (1.0, 0.0)
         lx, ly = -fy, fx
-        fl, _, hw = self.robot.footprint_from_control()
+        fl, _, hw = ROBOT_CONFIG.footprint_from_control()
         rows, cols = obstacle_mask.shape
         steps = int(max_dist / self.resolution) + 1
         for step in range(steps):
@@ -592,7 +545,11 @@ class PlanningNode(Node):
         with Timer(name='traj gen', text="[{name}] Elapsed time: {milliseconds:.0f} ms"):
             init_p = self.camera_to_robot_center(T)
             init_q = np.array([odom_msg.pose.pose.orientation.x, odom_msg.pose.pose.orientation.y, odom_msg.pose.pose.orientation.z, odom_msg.pose.pose.orientation.w])
-            trajectories, params = generate_trajectory_library_3d(init_p=init_p, init_q=init_q)
+            trajectories, params = generate_trajectory_library_3d(
+                init_p=init_p, init_q=init_q,
+                max_linear_vel=ROBOT_CONFIG.max_linear_vel,
+                max_angular_vel=ROBOT_CONFIG.max_angular_vel,
+            )
             vocab_trajs, vocab_params = generate_predefined_trajectory_vocabularies(init_p=init_p, init_q=init_q)
             trajectories = np.concatenate([trajectories, vocab_trajs], axis=0)
             params = np.concatenate([params, vocab_params], axis=0)
@@ -600,8 +557,8 @@ class PlanningNode(Node):
             self.last_stamp = stamp
 
         with Timer(name='traj score', text="[{name}] Elapsed time: {milliseconds:.0f} ms"):
-            front_len, rear_len, half_w = self.robot.footprint_from_control()
-            scores, occ_points = score_trajectories_by_ESDF(trajectories, ESDF_map, self.origin, self.resolution, self.robot.safety_radius, front_len, rear_len, half_w)
+            front_len, rear_len, half_w = ROBOT_CONFIG.footprint_from_control()
+            scores, occ_points = score_trajectories_by_ESDF(trajectories, ESDF_map, self.origin, self.resolution, ROBOT_CONFIG.safety_radius, front_len, rear_len, half_w)
             top_k = 100
             top_indices = np.argsort(scores, kind='stable')[:top_k]
 
