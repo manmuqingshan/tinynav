@@ -6,7 +6,12 @@ import os
 from numba import njit
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tinynav', 'core'))
-from planning_node import run_raycasting_loopy
+from planning_node import (
+    run_raycasting_loopy,
+    generate_trajectory_library_3d,
+    goal_heading_error,
+)
+from tinynav.core.math_utils import matrix_to_quat
 from tinynav.tinynav_cpp_bind import run_raycasting_cpp
 
 @njit
@@ -143,5 +148,103 @@ def test_run_raycasting_comparison():
             print_diffs(py_occupancy_grid, cpp_occupancy_grid, "Vectorized", "C++")
         assert False, "Implementations do not match."
 
+# body +Z (forward) along world +X, body +Y (down) along world -Z: the camera convention
+_FACING_X = np.array([[0.0, 0.0, 1.0],
+                      [-1.0, 0.0, 0.0],
+                      [0.0, -1.0, 0.0]])
+
+# mirrors the regular-trajectory term of PlanningNode.cost_function (planning_node.py); keep
+# the weights (100000/100/100/10/10) and heading fade distance (2.0) in sync by hand
+_HEADING_WEIGHT = 100.0
+_HEADING_FADE_DIST = 2.0
+
+def _trajectory_cost(traj, param, score, target_end, last_param, heading_weight=_HEADING_WEIGHT):
+    dist = np.linalg.norm(np.asarray(traj[-1, :3]) - target_end)
+    heading = goal_heading_error(traj[-1], target_end) * min(1.0, dist / _HEADING_FADE_DIST)
+    return (
+        score * 100000
+        + 100 * dist
+        + heading_weight * heading
+        + 10 * abs(last_param[0] - param[0])
+        + 10 * abs(last_param[1] - param[1])
+    )
+
+def _pick(target, heading_weight=_HEADING_WEIGHT):
+    """Lowest-cost (vx, omega) from the planner's own cost terms, with a clear ESDF
+    (score=0), no reverse gating and a standing start."""
+    trajectories, params = generate_trajectory_library_3d(init_p=np.zeros(3), init_q=matrix_to_quat(_FACING_X))
+    last_param = np.zeros(2)
+    costs = [
+        _trajectory_cost(trajectories[i], params[i], 0.0, target, last_param, heading_weight=heading_weight)
+        for i in range(len(trajectories))
+    ]
+    return params[np.argsort(costs, kind='stable')[0]]
+
+def test_goal_heading_error():
+    end = np.zeros(7)
+    end[3:] = matrix_to_quat(_FACING_X)
+    for target, expected in (
+        ([5.0, 0.0, 0.0], 0.0),
+        ([-5.0, 0.0, 0.0], np.pi),
+        ([0.0, 5.0, 0.0], np.pi / 2),
+        ([0.0, -5.0, 0.0], np.pi / 2),  # unsigned, so both sides score the same
+        ([0.0, 0.0, 5.0], 0.0),         # no XY bearing
+    ):
+        got = goal_heading_error(end, np.array(target))
+        assert abs(got - expected) < 1e-6, f"target {target}: {got} != {expected}"
+
+def test_goal_behind_turns_in_place():
+    # forward-only samples all recede from a target behind, so distance alone picks vx=0,
+    # and the shared vx=0 endpoint leaves smoothness to pick omega=0 too
+    behind = np.array([-5.0, 0.0, 0.0])
+    assert tuple(_pick(behind, heading_weight=0.0)) == (0.0, 0.0)
+
+    vx, omega = _pick(behind)
+    assert abs(omega) > 1e-6, f"target behind still yields omega={omega}"
+
+def test_goal_ahead_still_drives_straight():
+    vx, omega = _pick(np.array([5.0, 0.0, 0.0]))
+    assert vx > 0.0 and abs(omega) < 1e-6, f"target ahead yields vx={vx}, omega={omega}"
+
+def test_goal_abeam_turns_while_driving():
+    for side in (5.0, -5.0):
+        vx, omega = _pick(np.array([0.0, side, 0.0]))
+        assert vx > 0.0 and abs(omega) > 1e-6, f"target abeam yields vx={vx}, omega={omega}"
+
+def test_heading_fades_within_arrival_radius():
+    # inside HEADING_FADE_DIST the heading term is scaled down, so it cannot outbid distance:
+    # the pick must still be the trajectory that lands closest to the goal
+    trajectories, params = generate_trajectory_library_3d(init_p=np.zeros(3), init_q=matrix_to_quat(_FACING_X))
+    close = np.array([0.4, 0.3, 0.0])
+    assert np.linalg.norm(close) < _HEADING_FADE_DIST
+
+    dists = [np.linalg.norm(trajectories[i][-1, :3] - close) for i in range(len(trajectories))]
+    nearest = int(np.argmin(dists))
+    picked = _pick(close)
+    assert tuple(picked) == tuple(params[nearest]), f"close goal picked {picked}, not nearest {params[nearest]}"
+
+def test_heading_fade_is_monotonic_in_distance():
+    # same bearing error, different range: the heading penalty grows with distance and saturates
+    end = np.zeros(7)
+    end[3:] = matrix_to_quat(_FACING_X)
+    traj = end[None, :]
+    last_param = np.zeros(2)
+    param = np.zeros(2)
+
+    def heading_term(range_m):
+        target = np.array([0.0, range_m, 0.0])  # 90 deg off the nose at every range
+        return _trajectory_cost(traj, param, 0.0, target, last_param) - 100 * range_m
+
+    terms = [heading_term(r) for r in (0.5, 1.0, 2.0, 4.0)]
+    assert terms[0] < terms[1] < terms[2], f"heading penalty not growing with range: {terms}"
+    assert abs(terms[2] - terms[3]) < 1e-9, f"heading penalty not saturated past the fade distance: {terms}"
+    assert abs(terms[2] - _HEADING_WEIGHT * np.pi / 2) < 1e-9, f"saturated penalty {terms[2]} != full weight"
+
 if __name__ == "__main__":
+    test_goal_heading_error()
+    test_goal_behind_turns_in_place()
+    test_goal_ahead_still_drives_straight()
+    test_goal_abeam_turns_while_driving()
+    test_heading_fades_within_arrival_radius()
+    test_heading_fade_is_monotonic_in_distance()
     test_run_raycasting_comparison()

@@ -5,6 +5,7 @@ from nav_msgs.msg import Path, Odometry, OccupancyGrid
 from cv_bridge import CvBridge
 import numpy as np
 from scipy.ndimage import distance_transform_edt, binary_dilation
+from scipy.spatial.transform import Rotation as R
 from numba import njit
 import message_filters
 from rclpy.time import Time
@@ -266,6 +267,14 @@ def score_trajectories_by_ESDF(trajectories, ESDF_map, origin, resolution, safet
             scores.append(0.0)
         occ_points.append(closest_step_for_traj)
     return scores, occ_points
+
+def goal_heading_error(traj_end, target):
+    """Absolute yaw error between a trajectory's end heading and the bearing to the target."""
+    dx = target[0] - traj_end[0]
+    dy = target[1] - traj_end[1]
+    yaw1 = R.from_quat(traj_end[3:7]).as_euler("xyz")[2] + np.pi / 2
+    yaw2 = np.arctan2(dy, dx)
+    return abs(np.arctan2(np.sin(yaw2 - yaw1), np.cos(yaw2 - yaw1)))
 
 def roll_occupancy_grid(occupancy_grid, old_origin, new_origin, resolution):
     shift_m = new_origin - old_origin
@@ -571,8 +580,18 @@ class PlanningNode(Node):
                 traj_end = np.array(traj[-1,:3])
                 target_end = target_pose if target_pose is not None else traj_end
                 dist = np.linalg.norm(traj_end - target_end)
+                # heading error weighted like distance (1 rad ~ 1 m) far from the goal, faded out
+                # linearly inside 2 m so bearing noise cannot dominate the distance term on arrival
+                heading = goal_heading_error(traj[-1], target_end) * min(1.0, dist / 2.0)
 
-                return score * 100000 + 100 * dist + 10 * abs(self.last_param[0] - param[0]) + 10 * abs(self.last_param[1] - param[1]) + reverse_gate_penalty
+                return (
+                    score * 100000
+                    + 100 * dist
+                    + 100 * heading
+                    + 10 * abs(self.last_param[0] - param[0])
+                    + 10 * abs(self.last_param[1] - param[1])
+                    + reverse_gate_penalty
+                )
 
             top_k = 1
             top_indices = np.argsort(np.array([cost_function(trajectories[i], params[i], scores[i], self.target_pose) for i in range(len(trajectories))]), kind='stable')[:top_k]
