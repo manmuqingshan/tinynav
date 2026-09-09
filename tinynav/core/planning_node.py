@@ -559,8 +559,6 @@ class PlanningNode(Node):
         with Timer(name='traj score', text="[{name}] Elapsed time: {milliseconds:.0f} ms"):
             front_len, rear_len, half_w = ROBOT_CONFIG.footprint_from_control()
             scores, occ_points = score_trajectories_by_ESDF(trajectories, ESDF_map, self.origin, self.resolution, ROBOT_CONFIG.safety_radius, front_len, rear_len, half_w)
-            top_k = 100
-            top_indices = np.argsort(scores, kind='stable')[:top_k]
 
         with Timer(name='pub', text="[{name}] Elapsed time: {milliseconds:.0f} ms"):
             front_clearance = self._front_obstacle_dist(T, obstacle_mask)
@@ -585,8 +583,8 @@ class PlanningNode(Node):
                 heading = goal_heading_error(traj[-1], target_end) * min(1.0, dist / 2.0)
 
                 return (
-                    score * 100000
-                    + 100 * dist
+                    score * 2000
+                    + 1000 * dist
                     + 100 * heading
                     + 10 * abs(self.last_param[0] - param[0])
                     + 10 * abs(self.last_param[1] - param[1])
